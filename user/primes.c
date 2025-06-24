@@ -59,7 +59,6 @@ int main(int argc, char** argv)
     if (fork() == 0) {
         close(initPipe[WR]);
         sieve(initPipe);
-        exit(0);
     } else {
         close(initPipe[RD]);
         close(initPipe[WR]);
