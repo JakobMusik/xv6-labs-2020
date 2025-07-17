@@ -440,3 +440,46 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+
+void
+vmprint_recursive(pagetable_t pagetable, int level, uint64 va) {
+  pte_t* pte;
+  for (int i = 0; i < 512; ++i) {
+    pte = &pagetable[i];
+    if (*pte & PTE_V) {
+      for (int j = level; j <= 2; ++j) {
+        printf(" ..");
+      }
+      uint64 new_va = va | ((uint64)i << PXSHIFT(level));
+      if (new_va & (1L << 38)) {
+        new_va |= ~((1L << 39) - 1);
+      } else {
+        new_va &= ((1L << 39) - 1);
+      }
+      /**
+       * answer has preceding '1's for some reason, 
+       * but first 1 of '3fc' is at bit 37 not bit 38, 
+       * it is indeed correct sign-extension of sv39
+       * (requires preceding bits set to 1 if bit 38 is 1).
+       * guess the official answer has some problems?
+       * possible problem made by the official code below:
+       */
+      if (1) {
+        new_va = va | ((int)i << PXSHIFT(level));
+      }
+
+      printf("%d: pte %p pa %p\n", i, (void*)*pte, (void*)PTE2PA(*pte));
+      if (level != 0) {
+        vmprint_recursive((pagetable_t)PTE2PA(*pte), level - 1, new_va);
+      }
+    }
+  }
+}
+
+void
+vmprint(pagetable_t pagetable) {
+  printf("page table %p\n", pagetable);
+
+  vmprint_recursive(pagetable, 2, 0);
+}
