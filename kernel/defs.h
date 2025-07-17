@@ -181,6 +181,7 @@ int             iscowpage(pte_t*);
 uint64          alloccowpage(pagetable_t, uint64, pte_t*);
 int             uvmcopyonwrite(pagetable_t, pagetable_t, uint64);
 int             pagefaulthandler(struct proc*, uint64, uint64);
+void            vmprint(pagetable_t);
 
 // plic.c
 void            plicinit(void);
