@@ -31,15 +31,16 @@ procinit(void)
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
 
+      /* lab 3 */
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      p->kstack = PROCKSTACK;
+      /* lab 3 */
   }
   kvminithart();
 }
@@ -121,6 +122,16 @@ found:
     return 0;
   }
 
+  /* lab 3 */
+  p->kernelpgtbl = kvmmakepgtbl();
+    /* allocate kstack AND map it in the new process kernel pgtbl*/
+  void* pa = kalloc();
+  if (pa == 0) {
+    panic("kalloc");
+  }
+  kvmmap(p->kernelpgtbl, p->kstack, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  /* lab 3 */
+  
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -150,6 +161,18 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  /* lab 3 mod start */
+
+  void* kstack_pa = (void*)kvmpa(p->kernelpgtbl, p->kstack);
+  kfree(kstack_pa);
+
+  if (p->kernelpgtbl) {
+    proc_freekernelpagetable(p->kernelpgtbl);
+  }
+  p->kernelpgtbl = 0;
+
+  /* lab 3 mod end*/
 }
 
 // Create a user page table for a given process,
@@ -193,6 +216,24 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
+}
+
+/*lab3 addition*/
+void
+proc_freekernelpagetable(pagetable_t pagetable)
+{
+  for (int i = 0; i < 512; ++i) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+      uint64 child = PTE2PA(pte);
+      proc_freekernelpagetable((pagetable_t)child);
+      pagetable[i] = 0;
+    }
+    // else if (pte & PTE_V) {
+    //   panic("freekpgtbl: leaf");
+    // }
+  }
+  kfree((void*)pagetable);
 }
 
 // a user program that calls exec("/init")
@@ -473,7 +514,21 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        /* lab 3 mod start */
+
+        w_satp(MAKE_SATP(p->kernelpgtbl));
+        sfence_vma();
+
+        /* lab 3 mod end */
+
+
         swtch(&c->context, &p->context);
+
+        /* lab 3 mod s*/
+        // switching back to the global kernel pagetable
+        kvminithart();
+        /* lab 3 mod e*/
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.

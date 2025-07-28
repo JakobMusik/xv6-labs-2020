@@ -55,6 +55,9 @@
 // each surrounded by invalid guard pages.
 #define KSTACK(p) (TRAMPOLINE - ((p)+1)* 2*PGSIZE)
 
+// lab3 kernel page per process
+#define PROCKSTACK (TRAMPOLINE - 2*PGSIZE)
+
 // User memory layout.
 // Address zero first:
 //   text
