@@ -51,6 +51,14 @@ exec(char *path, char **argv)
     uint64 sz1;
     if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz)) == 0)
       goto bad;
+    /**
+     * lab 3 modification 
+     * mod: check the program size to not exceed user vm limit
+     */
+    if (sz1 > USERVMEND) {
+      goto bad;
+    }
+    /** */
     sz = sz1;
     if(ph.vaddr % PGSIZE != 0)
       goto bad;
@@ -107,16 +115,32 @@ exec(char *path, char **argv)
     if(*s == '/')
       last = s+1;
   safestrcpy(p->name, last, sizeof(p->name));
-    
-  // Commit to the user image.
+
+  /**
+   * lab3 copyin/copyinstr mod
+   * clear old user kernel pgtbl mappings
+   * and copy new mappings from user pgtbl to user kernel pgtbl
+   */
+  // old implementation: `kvmunmap(p->kernelpgtbl, 0, PGROUNDUP(oldsz)/PGSIZE);` has downsides
+  kvmunmap(p->kernelpgtbl, 0, PGROUNDUP(oldsz)/PGSIZE);
+  // pagetable_t kernelpagetable = proc_kernelpagetable(p);//, oldkpgtbl;
+  kvmcopymappings(pagetable, p->kernelpgtbl, 0, sz);
+  // kvmcopymappings(pagetable, kernelpagetable, 0, sz);
+
+  // Commit to the user image.  
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
+  // oldkpgtbl = p->kernelpgtbl;
+  // p->kernelpgtbl = kernelpagetable;
+
   p->sz = sz;
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
-  // lab3 2020 `print a pagetable`
+
+
+  // lab3 print a pagetable
   if (p->pid == 1) {
     vmprint(p->pagetable);
   }

@@ -30,17 +30,6 @@ procinit(void)
   initlock(&pid_lock, "nextpid");
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
-
-      /* lab 3 */
-      // Allocate a page for the process's kernel stack.
-      // Map it high in memory, followed by an invalid
-      // guard page.
-      // char *pa = kalloc();
-      // if(pa == 0)
-      //   panic("kalloc");
-      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = PROCKSTACK;
-      /* lab 3 */
   }
   kvminithart();
 }
@@ -114,7 +103,13 @@ found:
     return 0;
   }
 
-  // An empty user page table.
+  // Allocate a page for process kernel stack
+  if ((p->kstackpa = (uint64)kalloc()) == 0) {
+    release(&p->lock);
+    return 0;
+  }
+
+  // An empty user page table
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
     freeproc(p);
@@ -122,21 +117,19 @@ found:
     return 0;
   }
 
-  /* lab 3 */
-  p->kernelpgtbl = kvmmakepgtbl();
-    /* allocate kstack AND map it in the new process kernel pgtbl*/
-  void* pa = kalloc();
-  if (pa == 0) {
-    panic("kalloc");
+  // An empty process kernel page table.
+  p->kernelpgtbl = proc_kernelpagetable(p);
+  if (p->kernelpgtbl == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
   }
-  kvmmap(p->kernelpgtbl, p->kstack, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-  /* lab 3 */
-  
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
-  p->context.sp = p->kstack + PGSIZE;
+  p->context.sp = PROCKSTACK + PGSIZE;
 
   return p;
 }
@@ -153,6 +146,14 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+  if(p->kstackpa)
+    kfree((void*)p->kstackpa);
+  p->kstackpa = 0;
+  if (p->kernelpgtbl) {
+    proc_freekernelpagetable(p->kernelpgtbl);
+  }
+  p->kernelpgtbl = 0;
+  
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -162,17 +163,6 @@ freeproc(struct proc *p)
   p->xstate = 0;
   p->state = UNUSED;
 
-  /* lab 3 mod start */
-
-  void* kstack_pa = (void*)kvmpa(p->kernelpgtbl, p->kstack);
-  kfree(kstack_pa);
-
-  if (p->kernelpgtbl) {
-    proc_freekernelpagetable(p->kernelpgtbl);
-  }
-  p->kernelpgtbl = 0;
-
-  /* lab 3 mod end*/
 }
 
 // Create a user page table for a given process,
@@ -208,6 +198,23 @@ proc_pagetable(struct proc *p)
   return pagetable;
 }
 
+/** lab3 copyin / copyinstr for optimization purpose
+ * Creates a new kernel pagetable that has mapping to the proccess's
+ *  kstack (allocated in function allocproc())
+ */
+pagetable_t
+proc_kernelpagetable(struct proc* p)
+{
+  pagetable_t pagetable;
+  pagetable = kvmmakepgtbl();
+  if (pagetable == 0) return 0;
+
+  kvmmap(pagetable, PROCKSTACK, p->kstackpa, PGSIZE, PTE_R | PTE_W);
+
+  return pagetable;
+}
+
+
 // Free a process's page table, and free the
 // physical memory it refers to.
 void
@@ -218,20 +225,18 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmfree(pagetable, sz);
 }
 
-/*lab3 addition*/
+/** lab3 copyin / copyinstr
+ * Frees a process's kernel pagetable pages.
+ */
 void
 proc_freekernelpagetable(pagetable_t pagetable)
 {
   for (int i = 0; i < 512; ++i) {
     pte_t pte = pagetable[i];
-    if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+    if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0 /*not a leaf*/) {
       uint64 child = PTE2PA(pte);
       proc_freekernelpagetable((pagetable_t)child);
-      pagetable[i] = 0;
     }
-    // else if (pte & PTE_V) {
-    //   panic("freekpgtbl: leaf");
-    // }
   }
   kfree((void*)pagetable);
 }
@@ -261,6 +266,7 @@ userinit(void)
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
+  kvmcopymappings(p->pagetable, p->kernelpgtbl, 0, p->sz);
 
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
@@ -279,16 +285,25 @@ userinit(void)
 int
 growproc(int n)
 {
-  uint sz;
+  uint sz, newsz;
   struct proc *p = myproc();
 
   sz = p->sz;
   if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
+    if((newsz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    /** lab3 copyin/copyinstr addition */
+    if (kvmcopymappings(p->pagetable, p->kernelpgtbl, sz, n) != 0) {
+      uvmdealloc(p->pagetable, newsz, sz);
+      return -1;
+    }
+    sz = newsz;
   } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
+    newsz = uvmdealloc(p->pagetable, sz, sz + n);
+    /** lab3 copyin */
+    sz = kvmdealloc(p->kernelpgtbl, sz, newsz);
+    /** */
   }
   p->sz = sz;
   return 0;
@@ -309,7 +324,8 @@ fork(void)
   }
 
   // Copy user memory from parent to child.
-  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+  if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0 ||
+     kvmcopymappings(np->pagetable, np->kernelpgtbl, 0, p->sz) < 0){
     freeproc(np);
     release(&np->lock);
     return -1;

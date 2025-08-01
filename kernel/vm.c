@@ -27,25 +27,32 @@ void
 kvminit()
 {
   kernel_pagetable = kvmmakepgtbl();
+  // CLINT 0x2000000L, only mapped for the global kernel pagetable.
+  kvmmap(kernel_pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
 }
 
 void
 kvminitpgtbl(pagetable_t pagetable)
 {
-  // kernel_pagetable = (pagetable_t) kalloc();
-  // memset(kernel_pagetable, 0, PGSIZE);
+  /** lab3 copyin/copyinstr modification
+   * quote instruction: `However, this scheme does limit the maximum size of a user process
+   *  to be less than the kernel's lowest virtual address.
+   *  After the kernel has booted, that address is 0xC000000 in xv6,
+   *  the address of the PLIC registers`
+   * Consulting Chapter 5 of the xv6 book and the `start.c` file 
+   *  reveals that the CLINT (Core Local Interrupt Controller) is only 
+   *  needed during kernel startup. User processes operating in 
+   *  kernel mode do not require the use of this mapping.
+   */
+  
+  // PLIC 0x0c000000L
+  kvmmap(pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
 
-  // uart registers
+  // uart registers 0x10000000L
   kvmmap(pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
 
-  // virtio mmio disk interface
+  // virtio mmio disk interface 0x10001000
   kvmmap(pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
-
-  // CLINT
-  kvmmap(pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
-
-  // PLIC
-  kvmmap(pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
 
   // map kernel text executable and read-only.
   kvmmap(pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
@@ -62,14 +69,6 @@ kvminitpgtbl(pagetable_t pagetable)
 // add a mapping to the kernel page table.
 // only used when booting.
 // does not flush TLB or enable paging.
-// void
-// kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
-// {
-//   if(mappages(kernel_pagetable, va, sz, pa, perm) != 0)
-//     panic("kvmmap");
-// }
-
-// lab3 kernel page per process
 void
 kvmmap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
 {
@@ -80,7 +79,10 @@ kvmmap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm)
 pagetable_t
 kvmmakepgtbl()
 {
-  pagetable_t pgtbl = (pagetable_t) kalloc();
+  pagetable_t pgtbl;
+  if ((pgtbl = (pagetable_t) kalloc()) == 0) {
+    return 0;
+  }
   memset(pgtbl, 0, PGSIZE);
   kvminitpgtbl(pgtbl);
 
@@ -91,22 +93,6 @@ kvmmakepgtbl()
 // a physical address. only needed for
 // addresses on the stack.
 // assumes va is page aligned.
-// uint64
-// kvmpa(uint64 va)
-// {
-//   uint64 off = va % PGSIZE;
-//   pte_t *pte;
-//   uint64 pa;
-  
-//   pte = walk(kernel_pagetable, va, 0);
-//   if(pte == 0)
-//     panic("kvmpa");
-//   if((*pte & PTE_V) == 0)
-//     panic("kvmpa");
-//   pa = PTE2PA(*pte);
-//   return pa+off;
-// }
-
 uint64
 kvmpa(pagetable_t proc_kpgtbl, uint64 va)
 {
@@ -126,15 +112,6 @@ kvmpa(pagetable_t proc_kpgtbl, uint64 va)
 
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
-// void
-// kvminithart()
-// {
-//   w_satp(MAKE_SATP(kernel_pagetable));
-//   sfence_vma();
-// }
-
-/* lab 3 modifications end */
-
 void
 kvminithart()
 {
@@ -249,6 +226,12 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     }
     *pte = 0;
   }
+}
+
+void
+kvmunmap(pagetable_t pagetable, uint64 va, uint64 npages)
+{
+  uvmunmap(pagetable, va, npages, 0);
 }
 
 // create an empty user page table.
@@ -405,6 +388,56 @@ uvmclear(pagetable_t pagetable, uint64 va)
   *pte &= ~PTE_U;
 }
 
+/**
+ * lab 3 simplify copyin/copystr
+ * Copy process user pagetable to process's kernel pagetable
+ */
+int
+kvmcopymappings(pagetable_t src, pagetable_t dst, uint64 start, uint64 sz)
+{
+  pte_t* pte;
+  uint64 pa, i;
+  uint flags;
+
+  for(i = PGROUNDUP(start); i < start + sz; i += PGSIZE){
+    if((pte = walk(src, i, 0)) == 0)
+      panic("kvmcopymappings: pte should exist");
+    if((*pte & PTE_V) == 0)
+      panic("kvmcopymappings: page not present");
+    pa = PTE2PA(*pte);
+    // should not be accessible in user mode
+    flags = PTE_FLAGS(*pte) & ~PTE_U;
+    if(mappages(dst, i, PGSIZE, pa, flags) != 0){
+      goto err;
+    }
+  }
+  return 0;
+
+ err:
+  kvmunmap(dst, PGROUNDUP(start), (i - PGROUNDUP(start)) / PGSIZE);
+  return -1;
+}
+
+/**
+ * lab 3 simplify copyin/copystr
+ * Similar to uvmdealloc, shrink process memory from oldsz -> newsz
+ * But does NOT free the physical memory,
+ * only unmaps process kernel pagetable mappings
+ */
+uint64
+kvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+{
+  if(newsz >= oldsz)
+    return oldsz;
+
+  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+    int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
+    kvmunmap(pagetable, PGROUNDUP(newsz), npages);
+  }
+
+  return newsz;
+}
+
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
 // Return 0 on success, -1 on error.
@@ -436,23 +469,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
-
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
-
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -462,40 +479,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
-
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
-
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
-
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
-  }
+  return copyinstr_new(pagetable, dst, srcva, max);
 }
 
 
