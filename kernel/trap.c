@@ -32,6 +32,7 @@ trapinithart(void)
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
+// (cpu disables interrupt after the interrupt happens --jakob)
 //
 void
 usertrap(void)
@@ -101,8 +102,8 @@ usertrapret(void)
 
   // set up trapframe values that uservec will need when
   // the process next re-enters the kernel.
-  p->trapframe->kernel_satp = r_satp();         // kernel page table
-  p->trapframe->kernel_sp = PROCKSTACK + PGSIZE; // process's kernel stack
+  p->trapframe->kernel_satp = MAKE_SATP(p->kernelpgtbl);         // proc kernel page table
+  p->trapframe->kernel_sp = PROCKSTACK + PGSIZE; // the base addr of process's kernel stack
   p->trapframe->kernel_trap = (uint64)usertrap;
   p->trapframe->kernel_hartid = r_tp();         // hartid for cpuid()
 

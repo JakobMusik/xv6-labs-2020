@@ -149,9 +149,8 @@ freeproc(struct proc *p)
   if(p->kstackpa)
     kfree((void*)p->kstackpa);
   p->kstackpa = 0;
-  if (p->kernelpgtbl) {
+  if (p->kernelpgtbl)
     proc_freekernelpagetable(p->kernelpgtbl);
-  }
   p->kernelpgtbl = 0;
   
   p->sz = 0;
@@ -206,10 +205,13 @@ pagetable_t
 proc_kernelpagetable(struct proc* p)
 {
   pagetable_t pagetable;
-  pagetable = kvmmakepgtbl();
+  pagetable = initprockernalpgtbl();
   if (pagetable == 0) return 0;
 
-  kvmmap(pagetable, PROCKSTACK, p->kstackpa, PGSIZE, PTE_R | PTE_W);
+  if (mappages(pagetable, PROCKSTACK, PGSIZE, p->kstackpa, PTE_R | PTE_W) < 0) {
+    proc_freekernelpagetable(pagetable);
+    return 0;
+  }
 
   return pagetable;
 }
@@ -231,13 +233,19 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 void
 proc_freekernelpagetable(pagetable_t pagetable)
 {
+  pte_t pte;
   for (int i = 0; i < 512; ++i) {
-    pte_t pte = pagetable[i];
-    if ((pte & PTE_V) && (pte & (PTE_R | PTE_W | PTE_X)) == 0 /*not a leaf*/) {
-      uint64 child = PTE2PA(pte);
-      proc_freekernelpagetable((pagetable_t)child);
+    pte = pagetable[i];
+    if (pte & PTE_V) {
+      if ((pte & (PTE_R | PTE_W | PTE_X)) == 0 /* not a leaf */) {
+        uint64 child = PTE2PA(pte);
+        proc_freekernelpagetable((pagetable_t)child);
+      } else { /* is a leaf, pagetable on last level */
+        break;
+      }
     }
   }
+  // free the pagetable itself, wont free the leaf physical page (the second if statement)
   kfree((void*)pagetable);
 }
 
@@ -532,19 +540,14 @@ scheduler(void)
         c->proc = p;
 
         /* lab 3 mod start */
-
         w_satp(MAKE_SATP(p->kernelpgtbl));
         sfence_vma();
-
-        /* lab 3 mod end */
-
-
+        
         swtch(&c->context, &p->context);
 
-        /* lab 3 mod s*/
         // switching back to the global kernel pagetable
-        kvminithart();
-        /* lab 3 mod e*/
+        kvminithart(); // my own understanding: can't remove this because local variables are on stack0, but proc kerpgtbl maps it's own kstack somewhere else
+        /* lab 3 mod end */
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.

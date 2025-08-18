@@ -120,36 +120,45 @@ exec(char *path, char **argv)
    * lab3 copyin/copyinstr mod
    * clear old user kernel pgtbl mappings
    * and copy new mappings from user pgtbl to user kernel pgtbl
+   * 
+   * shell waits on exec, init proc waits shell and orphans?
    */
-  // old implementation: `kvmunmap(p->kernelpgtbl, 0, PGROUNDUP(oldsz)/PGSIZE);` has downsides
-  kvmunmap(p->kernelpgtbl, 0, PGROUNDUP(oldsz)/PGSIZE);
-  // pagetable_t kernelpagetable = proc_kernelpagetable(p);//, oldkpgtbl;
-  kvmcopymappings(pagetable, p->kernelpgtbl, 0, sz);
-  // kvmcopymappings(pagetable, kernelpagetable, 0, sz);
+  pagetable_t kernelpagetable;
+  if((kernelpagetable = proc_kernelpagetable(p)) == 0)
+    goto bad;
+  kvmcopymappings(pagetable, kernelpagetable, 0, sz); 
+  /**
+   * TODO: can be further optimized to only freeing the 
+   *  pagetable pages that has lower mappings used by the user vm space
+   *  that means only freeing pgtbl pages that hosts va from 0 to PLIC-1 (0x0c000000L-1)
+   */
+  w_satp(MAKE_SATP(kernelpagetable));
+  sfence_vma(); // tests also passed without flushing TLB, added for clarity
+  proc_freekernelpagetable(p->kernelpgtbl);
+  p->kernelpgtbl = kernelpagetable;
 
   // Commit to the user image.  
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
-  // oldkpgtbl = p->kernelpgtbl;
-  // p->kernelpgtbl = kernelpagetable;
 
   p->sz = sz;
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
-
-
   // lab3 print a pagetable
   if (p->pid == 1) {
     vmprint(p->pagetable);
   }
 
+  // this returns to the caller `void syscall()` in syscall.c, then returns to usertrap, then calls usertrapret
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
   if(pagetable)
     proc_freepagetable(pagetable, sz);
+  if (kernelpagetable)
+    proc_freekernelpagetable(kernelpagetable);
   if(ip){
     iunlockput(ip);
     end_op();
