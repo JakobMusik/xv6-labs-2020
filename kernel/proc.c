@@ -237,16 +237,43 @@ proc_freekernelpagetable(pagetable_t pagetable)
   for (int i = 0; i < 512; ++i) {
     pte = pagetable[i];
     if (pte & PTE_V) {
-      if ((pte & (PTE_R | PTE_W | PTE_X)) == 0 /* not a leaf */) {
+      if (PTE_FLAGS(pte) == PTE_V /* not a leaf */) {
         uint64 child = PTE2PA(pte);
         proc_freekernelpagetable((pagetable_t)child);
       } else { /* is a leaf, pagetable on last level */
         break;
       }
     }
+    // since it's freeing the whole page, no need to reset ptes to 0
   }
-  // free the pagetable itself, wont free the leaf physical page (the second if statement)
   kfree((void*)pagetable);
+}
+
+/** lab3 optimization: frees the proc kernel pagetable pages
+ *    that are associated with the user vm space, i.e. lvl2pgtbl[0],
+ *    lvl1pgtbl[0, 95], lvl0pgtbl[0,512]. Because the user vm starts from
+ *    0 to USERVMEND (i.e. 000000000 000000000 000000000 <12bits 0> to 
+ *    PLIC - 1 = 000000000 001100000 000000000 <12bits 0> - 1) and 001100000b is 96
+ *    ps: USERVMEND = 000000000 001011111 111111111 <12bits 1>
+ *  Function proc_freekernelpagetable_uservm_range frees 96 pagetable pages in total
+ *    not freeing pagetable (lvl2) or pagetable[0] (lvl1)
+ */
+void
+proc_freekernelpagetable_uservm_range(pagetable_t pagetable)
+{
+  pte_t* pte;
+  pte = &pagetable[0];
+  if (*pte & PTE_V) {
+    pagetable_t lvl1pgtbl = (pagetable_t) PTE2PA(*pte);
+    for (int i = 0; i < 96; ++i) { // iterate through pte's that point to lvl0 pagetables
+      pte = &lvl1pgtbl[i];
+      if (*pte & PTE_V) {
+        // frees the lvl0 pagetable page
+        kfree((void*)PTE2PA(*pte));
+      }
+      *pte = 0;
+    }
+  }
 }
 
 // a user program that calls exec("/init")

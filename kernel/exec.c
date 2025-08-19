@@ -123,19 +123,9 @@ exec(char *path, char **argv)
    * 
    * shell waits on exec, init proc waits shell and orphans?
    */
-  pagetable_t kernelpagetable;
-  if((kernelpagetable = proc_kernelpagetable(p)) == 0)
-    goto bad;
-  kvmcopymappings(pagetable, kernelpagetable, 0, sz); 
-  /**
-   * TODO: can be further optimized to only freeing the 
-   *  pagetable pages that has lower mappings used by the user vm space
-   *  that means only freeing pgtbl pages that hosts va from 0 to PLIC-1 (0x0c000000L-1)
-   */
-  w_satp(MAKE_SATP(kernelpagetable));
-  sfence_vma(); // tests also passed without flushing TLB, added for clarity
-  proc_freekernelpagetable(p->kernelpgtbl);
-  p->kernelpgtbl = kernelpagetable;
+  // kvmunmap(p->kernelpgtbl, 0, PGROUNDUP(oldsz) / PGSIZE);
+  proc_freekernelpagetable_uservm_range(p->kernelpgtbl);
+  kvmcopymappings(pagetable, p->kernelpgtbl, 0, sz);
 
   // Commit to the user image.  
   oldpagetable = p->pagetable;
@@ -157,8 +147,6 @@ exec(char *path, char **argv)
  bad:
   if(pagetable)
     proc_freepagetable(pagetable, sz);
-  if (kernelpagetable)
-    proc_freekernelpagetable(kernelpagetable);
   if(ip){
     iunlockput(ip);
     end_op();
