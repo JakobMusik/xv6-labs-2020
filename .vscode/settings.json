@@ -5,6 +5,7 @@
         "riscv.h": "c",
         "proc.h": "c",
         "spinlock.h": "c",
-        "sleeplock.h": "c"
+        "sleeplock.h": "c",
+        "date.h": "c"
     }
 }

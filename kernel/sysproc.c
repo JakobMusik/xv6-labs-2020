@@ -97,3 +97,30 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+
+uint64
+sys_sigalarm(void)
+{
+  int proc_ticks;
+  void (*handler)(void);
+  argint(0, &proc_ticks);
+  argaddr(1, (uint64 *)&handler);
+
+  struct proc* p = myproc();
+  p->sigalarm_ticks = proc_ticks;
+  p->sigalarm_handler = handler;
+
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc* p = myproc();
+  *p->trapframe = *p->orig_trapframe;
+  p->handler_running = 0;
+  return p->trapframe->a0; // use trapframe.a0 as return value (saved in a0)
+                           // since returning 0 is going to overwrite it (a0 becomes 0), see syscall().
+}
+
