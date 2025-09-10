@@ -39,6 +39,8 @@ procinit(void)
         panic("kalloc");
       uint64 va = KSTACK((int) (p - proc));
       kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // this is the lower address of the kernel stack
+      // guard page is from [va + PGSIZE, va + 2*PGSIZE)
       p->kstack = va;
   }
   kvminithart();
