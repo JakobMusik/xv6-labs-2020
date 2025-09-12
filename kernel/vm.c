@@ -358,15 +358,19 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 {
   uint64 n, va0, pa0;
   struct proc *p = myproc();
-  if (checklazyalloc(p, dstva) > 0) {
-    alloclazypage(p, dstva);
-  }
-
+  pte_t* pte = 0;
+  
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+    if (va0 >= MAXVA) return -1;
+    pte = walk(pagetable, va0, 0);
+    if (islazypage(p, va0, pte)) {
+      alloclazypage(p, va0);
+    }
+    else if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
       return -1;
+    pa0 = PTE2PA(*pte);
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -387,13 +391,19 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
   uint64 n, va0, pa0;
   struct proc* p = myproc();
-  if (checklazyalloc(p, srcva) > 0) {
-    alloclazypage(p, srcva);
-  }
-
+  pte_t* pte = 0;
+  
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
+    if (va0 >= MAXVA) return -1;
+    pte = walk(pagetable, va0, 0);
+    if (islazypage(p, va0, pte)) {
+      alloclazypage(p, va0);
+    }
+    else if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+      return -1;
+    pa0 = PTE2PA(*pte);
+
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (srcva - va0);
@@ -417,14 +427,20 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
   uint64 n, va0, pa0;
   int got_null = 0;
-  struct proc *p = myproc();
-  if (checklazyalloc(p, srcva) > 0) {
-    alloclazypage(p, srcva);
-  }
+  struct proc* p = myproc();
+  pte_t* pte = 0;
 
   while(got_null == 0 && max > 0){
     va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
+    if (va0 >= MAXVA) return -1;
+    pte = walk(pagetable, va0, 0);
+    if (islazypage(p, va0, pte)) {
+      alloclazypage(p, va0);
+    }
+    else if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+      return -1;
+    pa0 = PTE2PA(*pte);
+
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (srcva - va0);
@@ -457,21 +473,17 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 
 /**
  * check if a new page should be allocated and mapped
+ * @param p process
+ * @param va virtual addr
+ * @param pte supply this with `walk(pgtbl, va, 0/1)`
  */
 int
-checklazyalloc(struct proc* p, uint64 va)
+islazypage(struct proc* p, uint64 va, pte_t* pte)
 {
-  pte_t* pte;
-  // if (va >= p->sz || PGROUNDDOWN(va) == p->kstack + PGSIZE /* accessing kernel stack guard page*/)
-  // No need to check kstack since it's way high at the top of VM space. p->sz (user vaddr) would never reach that
-  // and no need for user stack either, the guard page has only PTE_W removed so it's not going to be remapped.
-  if (va >= p->sz)
-    return -1;
-    
-  if ((pte = walk(p->pagetable, va, 0)) == 0 || (*pte & PTE_V) == 0)
+  if (va < p->sz && (pte == 0 || (*pte & PTE_V) == 0))
     return 1;
 
-  return -1;
+  return 0;
 }
 
 int
@@ -479,35 +491,14 @@ alloclazypage(struct proc* p, uint64 va)
 {
   // allocate a page for lazy allocation
   void* mem;
-  if ((mem = kalloc()) == 0)
-  {
+  if ((mem = kalloc()) == 0) {
     return -1;
   }
 
   memset(mem, 0, PGSIZE);
-  if (mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, PTE_W | PTE_X | PTE_R | PTE_U) != 0)
-  {
+  if (mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, PTE_W | PTE_X | PTE_R | PTE_U) != 0) {
     kfree(mem);
-    printf("pagefaulthandler(): error mapping new page for pid=%d\n", p->pid);
     return -1;
   }
-  return 0;
-}
-
-int
-pagefaulthandler()
-{
-  // page fault handler
-  struct proc* p = myproc();
-  uint64 va = r_stval();
-  if (checklazyalloc(p, va) < 0)
-  {
-    return -1;
-  }
-
-  if (alloclazypage(p, va) == -1) {
-    return -1;
-  }
-
   return 0;
 }
