@@ -365,7 +365,9 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     if (va0 >= MAXVA) return -1;
     pte = walk(pagetable, va0, 0);
     if (islazypage(p, va0, pte)) {
-      alloclazypage(p, va0);
+      if (alloclazypage(p, va0) == -1) {
+        return -1;
+      }
     }
     else if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
       return -1;
@@ -398,7 +400,9 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     if (va0 >= MAXVA) return -1;
     pte = walk(pagetable, va0, 0);
     if (islazypage(p, va0, pte)) {
-      alloclazypage(p, va0);
+      if (alloclazypage(p, va0) == -1) {
+        return -1;
+      }
     }
     else if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
       return -1;
@@ -435,7 +439,9 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     if (va0 >= MAXVA) return -1;
     pte = walk(pagetable, va0, 0);
     if (islazypage(p, va0, pte)) {
-      alloclazypage(p, va0);
+      if (alloclazypage(p, va0) == -1) {
+        return -1;
+      }
     }
     else if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
       return -1;
