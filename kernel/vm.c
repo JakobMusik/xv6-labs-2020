@@ -158,7 +158,7 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   for(;;){
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
-    if(*pte & PTE_V)
+    if((*pte & PTE_V) && !(*pte & PTE_COW))
       panic("remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
     if(a == last)
@@ -367,6 +367,9 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     if (islazypage(p, va0, pte)) {
       alloclazypage(p, va0);
     }
+    else if (iscowpage(p, va0, pte)) {
+      alloccowpage(p, va0, pte);
+    }
     else if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
       return -1;
     pa0 = PTE2PA(*pte);
@@ -501,4 +504,84 @@ alloclazypage(struct proc* p, uint64 va)
     return -1;
   }
   return 0;
+}
+
+int
+iscowpage(struct proc* p, uint64 va, pte_t* pte)
+{
+  if (va < p->sz && (*pte & PTE_COW))
+    return 1;
+
+  return 0;
+
+}
+
+/**
+ * when page fault happens on a cow page, allocate an actual physical page
+ *  and remove PTE_COW, reduce reference for the original cow page. If
+ *  ref is 1, then take over by just removing PTE_COW
+ * @param p
+ * @param va
+ * @param pte type: pte_t*, supply with walk(pgtbl, va, 0/1)
+ */
+int
+alloccowpage(struct proc* p, uint64 va, pte_t* pte)
+{
+  void* mem = kalloc();
+  if (mem == 0) {
+    return -1;
+  }
+  memset(mem, 0, PGSIZE);
+  uint64 pa = PTE2PA(*pte);
+  memmove(mem, (char*)pa, PGSIZE);
+  if (mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW)) != 0) {
+    kfree(mem);
+    return -1;
+  }
+  kfree((void*)pa); // decrease reference count, free if ref reaches 0
+  return 0;
+}
+
+/**
+ * copy-on-write implemented based on uvmcopy()
+ * create COW mapping for both parent and child
+ * @param parent
+ * @param child
+ * @param sz
+ */
+int
+uvmcopyonwrite(pagetable_t parent, pagetable_t child, uint64 sz)
+{
+  pte_t* pte;
+  uint64 pa, i;
+
+  for (i = 0; i < sz; i += PGSIZE) {
+    if ((pte = walk(parent, i, 0)) == 0)
+      continue;
+    if ((*pte & PTE_V) == 0)
+      continue;
+    /**
+     * For pages that are valid and mapped AND writeable, set it as cow page, and mark
+     *  both parent and child entry as PTE_COW, remove PTE_W. And add reference to the
+     *  physical page
+     */
+    if (!(*pte & PTE_W) && !(*pte & PTE_COW))
+      continue;
+    *pte = (*pte | PTE_COW) & (~PTE_W); // update parent pte flags
+    pa = PTE2PA(*pte);
+    if (mappages(child, i, PGSIZE, pa, PTE_FLAGS(*pte)) != 0) {
+      // reverse the modification on parent ptes
+      for (int j = i; j >= 0; j -= PGSIZE) {
+        pte = walk(parent, j, 0);
+        if (*pte & PTE_COW) {
+          *pte = (*pte | PTE_W) & (~PTE_COW);
+        }
+      }
+      uvmunmap(child, 0, i / PGSIZE, 0);
+      return -1;
+    }
+    kincref(pa);
+  }
+  return 0;
+
 }

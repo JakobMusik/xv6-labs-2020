@@ -63,6 +63,7 @@ void            ramdiskrw(struct buf*);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
+void            kincref(uint64);
 
 // log.c
 void            initlog(int, struct superblock*);
@@ -174,6 +175,9 @@ int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             islazypage(struct proc*, uint64, pte_t*);
 int             alloclazypage(struct proc*, uint64);
+int             iscowpage(struct proc*, uint64, pte_t*);
+int             alloccowpage(struct proc*, uint64, pte_t*);
+int             uvmcopyonwrite(pagetable_t, pagetable_t, uint64);
 
 // plic.c
 void            plicinit(void);

@@ -81,10 +81,13 @@ usertrap(void)
         if (alloclazypage(p, va) == -1)
           p->killed = 1;
       }
+      else if (iscowpage(p, va, pte)) {
+        if (alloccowpage(p, va, pte) == -1)
+          p->killed = 1;
+      }
       else {
         p->killed = 1;
       }
-      // else if () 
     }
   }
   else {
