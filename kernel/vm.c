@@ -527,6 +527,11 @@ iscowpage(struct proc* p, uint64 va, pte_t* pte)
 int
 alloccowpage(struct proc* p, uint64 va, pte_t* pte)
 {
+  // optimization: no need to alloc new page if ref count is 1
+  if (kgetrefcnt(PTE2PA(*pte)) == 1) {
+    *pte = (*pte | PTE_W) & (~PTE_COW);
+    return 0;
+  }
   void* mem = kalloc();
   if (mem == 0) {
     return -1;

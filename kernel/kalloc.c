@@ -109,3 +109,16 @@ kincref(uint64 pa)
   kmem.pagerefcnt[pgidx]++;
   release(&kmem.lock);
 }
+
+int
+kgetrefcnt(uint64 pa)
+{
+  int pgidx = PA2PGIDX(pa);
+  int refcnt;
+
+  acquire(&kmem.lock);
+  refcnt = kmem.pagerefcnt[pgidx];
+  release(&kmem.lock);
+
+  return refcnt;
+}
