@@ -364,16 +364,28 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     va0 = PGROUNDDOWN(dstva);
     if (va0 >= MAXVA) return -1;
     pte = walk(pagetable, va0, 0);
-    if (islazypage(p, va0, pte)) {
-      alloclazypage(p, va0);
-    }
-    else if (iscowpage(p, va0, pte)) {
-      alloccowpage(p, va0, pte);
-    }
-    else if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+    if (pte && (*pte & PTE_V) && (*pte & PTE_U) == 0) { // not a user page
       return -1;
-    pa0 = PTE2PA(*pte);
+    }
+    // get the physical address of the page, allocate if needed
+    if (inlazypage(p, va0, pte)) {
+      if ((pa0 = alloclazypage(p, va0)) == -1) {
+        p->killed = 1;
+        return -1;
+      }
+    }
+    else if (incowpage(p, va0, pte)) {
+      if ((pa0 = alloccowpage(p, va0, pte)) == -1) {
+        p->killed = 1;
+        return -1;
+      }
+    }
+    else {
+      pa0 = pte ? PTE2PA(*pte) : 0;
+    }
 
+    if (pa0 == 0)
+      return -1;
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -395,28 +407,45 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   uint64 n, va0, pa0;
   struct proc* p = myproc();
   pte_t* pte = 0;
-  
+  // int islazyflag = 0;
+
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
     if (va0 >= MAXVA) return -1;
     pte = walk(pagetable, va0, 0);
-    if (islazypage(p, va0, pte)) {
-      alloclazypage(p, va0);
-    }
-    else if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+    if (pte && (*pte & PTE_V) && (*pte & PTE_U) == 0) { // not a user page
       return -1;
-    pa0 = PTE2PA(*pte);
+    }
+    // if va0 is in lazypage don't allocate only set memory to zero
+    if (inlazypage(p, va0, pte)) {
+      // islazyflag = 1;
+      if ((pa0 = alloclazypage(p, va0)) == -1) {
+        p->killed = 1;
+        return -1;
+      }
+      // pa0 = 1; // dummy value
+    }
+    else {
+      pa0 = pte ? PTE2PA(*pte) : 0;
+    }
 
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
+    // if (islazyflag) {
+    //   memset(dst, 0, n); // return zeroed memory for lazy page
+    // }
+    // else {
+    //   memmove(dst, (void*)(pa0 + (srcva - va0)), n);
+    // }
 
+    memmove(dst, (void*)(pa0 + (srcva - va0)), n);
     len -= n;
     dst += n;
     srcva = va0 + PGSIZE;
+    // islazyflag = 0;
   }
   return 0;
 }
@@ -437,11 +466,13 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     va0 = PGROUNDDOWN(srcva);
     if (va0 >= MAXVA) return -1;
     pte = walk(pagetable, va0, 0);
-    if (islazypage(p, va0, pte)) {
-      alloclazypage(p, va0);
-    }
-    else if (pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0)
+    if (pte && (*pte & PTE_V) && (*pte & PTE_U) == 0) { // not a user page
       return -1;
+    }
+    // don't allow copyinstr from a lazypage
+    if (inlazypage(p, va0, pte)) {
+      break;
+    }
     pa0 = PTE2PA(*pte);
 
     if(pa0 == 0)
@@ -481,7 +512,7 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
  * @param pte supply this with `walk(pgtbl, va, 0/1)`
  */
 int
-islazypage(struct proc* p, uint64 va, pte_t* pte)
+inlazypage(struct proc* p, uint64 va, pte_t* pte)
 {
   if (va < p->sz && (pte == 0 || (*pte & PTE_V) == 0))
     return 1;
@@ -489,7 +520,13 @@ islazypage(struct proc* p, uint64 va, pte_t* pte)
   return 0;
 }
 
-int
+/**
+ * allocate a new page for lazy allocation
+ * @param p process
+ * @param va virtual addr
+ * @return the newly allocated page address, or -1 on error
+ */
+uint64
 alloclazypage(struct proc* p, uint64 va)
 {
   // allocate a page for lazy allocation
@@ -503,14 +540,24 @@ alloclazypage(struct proc* p, uint64 va)
     kfree(mem);
     return -1;
   }
-  return 0;
+  return (uint64)mem;
 }
 
+/**
+ * check if a page is a cow page
+ * cow page should not have PTE_W flag set.
+ * @param p process
+ * @param va virtual addr
+ * @param pte supply this with `walk(pgtbl, va, 0/1)`
+ */
 int
-iscowpage(struct proc* p, uint64 va, pte_t* pte)
+incowpage(struct proc* p, uint64 va, pte_t* pte)
 {
-  if (va < p->sz && (*pte & PTE_COW))
+  if (va < p->sz && (*pte & PTE_COW)) {
+    if (*pte & PTE_W)
+      panic("incowpage: cow page has write permission");
     return 1;
+  }
 
   return 0;
 
@@ -523,14 +570,15 @@ iscowpage(struct proc* p, uint64 va, pte_t* pte)
  * @param p
  * @param va
  * @param pte type: pte_t*, supply with walk(pgtbl, va, 0/1)
+ * @return the newly allocated page address, or -1 on error
  */
-int
+uint64
 alloccowpage(struct proc* p, uint64 va, pte_t* pte)
 {
   // optimization: no need to alloc new page if ref count is 1
   if (kgetrefcnt(PTE2PA(*pte)) == 1) {
     *pte = (*pte | PTE_W) & (~PTE_COW);
-    return 0;
+    return (uint64)PTE2PA(*pte);
   }
   void* mem = kalloc();
   if (mem == 0) {
@@ -544,7 +592,7 @@ alloccowpage(struct proc* p, uint64 va, pte_t* pte)
     return -1;
   }
   kfree((void*)pa); // decrease reference count, free if ref reaches 0
-  return 0;
+  return (uint64)mem;
 }
 
 /**
@@ -566,7 +614,7 @@ uvmcopyonwrite(pagetable_t parent, pagetable_t child, uint64 sz)
     if ((*pte & PTE_V) == 0)
       continue;
     /**
-     * For pages that are valid and mapped AND writeable, set it as cow page, and mark
+     * For pages that are valid and mapped AND writeable or already a cow page, set it as cow page, and mark
      *  both parent and child entry as PTE_COW, remove PTE_W. And add reference to the
      *  physical page
      */
@@ -576,16 +624,16 @@ uvmcopyonwrite(pagetable_t parent, pagetable_t child, uint64 sz)
     pa = PTE2PA(*pte);
     if (mappages(child, i, PGSIZE, pa, PTE_FLAGS(*pte)) != 0) {
       // reverse the modification on parent ptes
-      for (int j = i; j >= 0; j -= PGSIZE) {
+      for (int j = i - PGSIZE; j >= 0; j -= PGSIZE) {
         pte = walk(parent, j, 0);
-        if (*pte & PTE_COW) {
-          *pte = (*pte | PTE_W) & (~PTE_COW);
-        }
+        if (!(*pte & PTE_COW))
+          continue;
+        kmodifyref(PTE2PA(*pte), -1);
       }
       uvmunmap(child, 0, i / PGSIZE, 0);
       return -1;
     }
-    kincref(pa);
+    kmodifyref(pa, +1);
   }
   return 0;
 

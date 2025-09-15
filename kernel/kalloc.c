@@ -102,11 +102,11 @@ kalloc(void)
  * @param pa the physical address associated with the target page
  */
 void
-kincref(uint64 pa)
+kmodifyref(uint64 pa, int delta)
 {
   int pgidx = PA2PGIDX(pa);
   acquire(&kmem.lock);
-  kmem.pagerefcnt[pgidx]++;
+  kmem.pagerefcnt[pgidx] += delta;
   release(&kmem.lock);
 }
 

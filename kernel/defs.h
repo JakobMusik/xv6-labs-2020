@@ -63,7 +63,7 @@ void            ramdiskrw(struct buf*);
 void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
-void            kincref(uint64);
+void            kmodifyref(uint64, int);
 int             kgetrefcnt(uint64);
 
 // log.c
@@ -174,10 +174,10 @@ pte_t*          walk(pagetable_t, uint64, int);
 int             copyout(pagetable_t, uint64, char *, uint64);
 int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
-int             islazypage(struct proc*, uint64, pte_t*);
-int             alloclazypage(struct proc*, uint64);
-int             iscowpage(struct proc*, uint64, pte_t*);
-int             alloccowpage(struct proc*, uint64, pte_t*);
+int             inlazypage(struct proc*, uint64, pte_t*);
+uint64          alloclazypage(struct proc*, uint64);
+int             incowpage(struct proc*, uint64, pte_t*);
+uint64          alloccowpage(struct proc*, uint64, pte_t*);
 int             uvmcopyonwrite(pagetable_t, pagetable_t, uint64);
 
 // plic.c

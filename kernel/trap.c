@@ -77,11 +77,11 @@ usertrap(void)
     else {
       // lazy page fault
       pte_t* pte = walk(p->pagetable, va, 0);
-      if (islazypage(p, va, pte)) {
+      if (inlazypage(p, va, pte)) {
         if (alloclazypage(p, va) == -1)
           p->killed = 1;
       }
-      else if (iscowpage(p, va, pte)) {
+      else if (incowpage(p, va, pte)) { // cow page fault
         if (alloccowpage(p, va, pte) == -1)
           p->killed = 1;
       }
