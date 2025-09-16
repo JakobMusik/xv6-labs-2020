@@ -359,23 +359,21 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   uint64 n, va0, pa0;
   struct proc *p = myproc();
   pte_t* pte = 0;
-  
+
+  if (dstva >= MAXVA - len || dstva + len > p->sz) // still need to check dstva >= MAXVA first, since it could be overflowed
+    return -1;
+
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    if (va0 >= MAXVA) return -1;
     pte = walk(pagetable, va0, 0);
-    if (pte && (*pte & PTE_V) && (*pte & PTE_U) == 0) { // not a user page
-      return -1;
-    }
-
     // get the physical address of the page, allocate if needed
-    if (dstva < p->sz && islazypage(pte)) {
+    if (islazypage(pte)) { // no need to check PTE_U as lazy page only happens when entry not mapped or invalid
       if ((pa0 = alloclazypage(pagetable, va0)) == -1) {
         setkilled(p);
         return -1;
       }
     }
-    else if (dstva < p->sz && iscowpage(pte) && (*pte & PTE_U)) { // copy-on-write page
+    else if (iscowpage(pte) && (*pte & PTE_U)) { // check PTE_U to avoid accessing stack guard page
       if ((pa0 = alloccowpage(pagetable, va0, pte)) == -1) {
         setkilled(p);
         return -1;
@@ -412,16 +410,14 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   pte_t* pte = 0;
   int islazyflag = 0;
 
+  if (srcva >= MAXVA - len || srcva + len > p->sz) // still need to check va >= MAXVA first, since it could be overflowed
+    return -1;
+
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
-    if(va0 >= MAXVA)
-      return -1;
     pte = walk(pagetable, va0, 0);
-    if (pte && (*pte & PTE_V) && (*pte & PTE_U) == 0) { // not a user page
-      return -1;
-    }
     // if va0 is in lazypage don't allocate only set memory to zero
-    if (va0 < p->sz && islazypage(pte)) {
+    if (islazypage(pte)) {
       islazyflag = 1;
     }
     else if (pte && (*pte & PTE_V) && (*pte & PTE_R) && (*pte & PTE_U)) {
@@ -463,7 +459,7 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
 
-    if(pa0 == 0)
+    if(pa0 == 0) // copyinstr from both lazy page or cow page should be illegal
       return -1;
     n = PGSIZE - (srcva - va0);
     if(n > max)
@@ -663,7 +659,36 @@ vmprint_recursive(pagetable_t pagetable, int level, uint64 va) {
         new_va = va | ((int)i << PXSHIFT(level));
       }
 
-      printf("%d: pte %p pa %p\n", i, (void*)*pte, (void*)PTE2PA(*pte));
+      printf("%d: pte %p pa %p", i, (void*)*pte, (void*)PTE2PA(*pte));
+      if (level == 0) {
+        printf(" va %p", (void*)new_va);
+        if (*pte & PTE_U) {
+          printf(" U");
+        }
+        if (*pte & PTE_R) {
+          printf(" R");
+        }
+        if (*pte & PTE_W) {
+          printf(" W");
+        }
+        if (*pte & PTE_X) {
+          printf(" X");
+        }
+        if (*pte & PTE_COW) {
+          printf(" COW");
+        }
+        int ref = kgetrefcnt(PTE2PA(*pte));
+        if (ref > 0) {
+          printf(" ref %d", ref);
+        }
+        else if (ref == 0) {
+          printf(" ref 0");
+        }
+        else {
+          printf(" ref ?");
+        }
+      }
+      printf("\n");
       if (level != 0) {
         vmprint_recursive((pagetable_t)PTE2PA(*pte), level - 1, new_va);
       }
@@ -671,6 +696,7 @@ vmprint_recursive(pagetable_t pagetable, int level, uint64 va) {
   }
 }
 
+// only for debugging
 void
 vmprint(pagetable_t pagetable) {
   printf("page table %p\n", pagetable);

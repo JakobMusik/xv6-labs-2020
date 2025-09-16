@@ -19,7 +19,8 @@ exec(char *path, char **argv)
   struct inode *ip;
   struct proghdr ph;
   pagetable_t pagetable = 0, oldpagetable;
-  struct proc *p = myproc();
+  struct proc* p = myproc();
+  uint64 oldsz = p->sz;
 
   begin_op();
 
@@ -61,8 +62,9 @@ exec(char *path, char **argv)
   end_op();
   ip = 0;
 
+  // kept the following two lines to be safe, but they should be redundant
   p = myproc();
-  uint64 oldsz = p->sz;
+  oldsz = p->sz;
 
   // Allocate two pages at the next page boundary.
   // Use the second as the user stack.
@@ -74,6 +76,12 @@ exec(char *path, char **argv)
   uvmclear(pagetable, sz-2*PGSIZE);
   sp = sz;
   stackbase = sp - PGSIZE;
+
+  /**
+   * Assign p->sz before copyout to avoid copyout failure
+   *  since copyout checks if va + len > p->sz
+   */
+  p->sz = sz;
 
   // Push argument strings, prepare rest of stack in ustack.
   for(argc = 0; argv[argc]; argc++) {
@@ -111,17 +119,18 @@ exec(char *path, char **argv)
   // Commit to the user image.
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
-  p->sz = sz;
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
-  
 
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
-  if(pagetable)
+  if (pagetable) {
+    // important bug fix: restore p->sz when exec fails or freewalk() panics
+    p->sz = oldsz;
     proc_freepagetable(pagetable, sz);
+  }
   if(ip){
     iunlockput(ip);
     end_op();
