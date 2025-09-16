@@ -104,6 +104,10 @@ kalloc(void)
 void
 kmodifyref(uint64 pa, int delta)
 {
+  if (delta == -1) {
+    kfree((void*)pa);
+    return;
+  }
   int pgidx = PA2PGIDX(pa);
   acquire(&kmem.lock);
   kmem.pagerefcnt[pgidx] += delta;

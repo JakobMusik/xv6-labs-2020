@@ -158,8 +158,8 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
   for(;;){
     if((pte = walk(pagetable, a, 1)) == 0)
       return -1;
-    if((*pte & PTE_V) && !(*pte & PTE_COW))
-      panic("remap");
+    if(*pte & PTE_V)
+      panic("mappages: remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
     if(a == last)
       break;
@@ -367,25 +367,28 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     if (pte && (*pte & PTE_V) && (*pte & PTE_U) == 0) { // not a user page
       return -1;
     }
+
     // get the physical address of the page, allocate if needed
-    if (inlazypage(p, va0, pte)) {
-      if ((pa0 = alloclazypage(p, va0)) == -1) {
-        p->killed = 1;
+    if (dstva < p->sz && islazypage(pte)) {
+      if ((pa0 = alloclazypage(pagetable, va0)) == -1) {
+        setkilled(p);
         return -1;
       }
     }
-    else if (incowpage(p, va0, pte)) {
-      if ((pa0 = alloccowpage(p, va0, pte)) == -1) {
-        p->killed = 1;
+    else if (dstva < p->sz && iscowpage(pte) && (*pte & PTE_U)) { // copy-on-write page
+      if ((pa0 = alloccowpage(pagetable, va0, pte)) == -1) {
+        setkilled(p);
         return -1;
       }
+    }
+    // bug fix: added `&& (*pte & PTE_W)` as we can only write to writable pages (fixed test case `copyout`)
+    else if (pte && (*pte & PTE_V) && (*pte & PTE_W) && (*pte & PTE_U)) {
+        pa0 = PTE2PA(*pte);
     }
     else {
-      pa0 = pte ? PTE2PA(*pte) : 0;
+      return -1;
     }
 
-    if (pa0 == 0)
-      return -1;
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -411,26 +414,28 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
-    if (va0 >= MAXVA) return -1;
+    if(va0 >= MAXVA)
+      return -1;
     pte = walk(pagetable, va0, 0);
     if (pte && (*pte & PTE_V) && (*pte & PTE_U) == 0) { // not a user page
       return -1;
     }
     // if va0 is in lazypage don't allocate only set memory to zero
-    if (inlazypage(p, va0, pte)) {
+    if (va0 < p->sz && islazypage(pte)) {
       // islazyflag = 1;
-      if ((pa0 = alloclazypage(p, va0)) == -1) {
-        p->killed = 1;
+      if ((pa0 = alloclazypage(pagetable, va0)) == -1) {
+        setkilled(p);
         return -1;
       }
       // pa0 = 1; // dummy value
     }
+    else if (pte && (*pte & PTE_V) && (*pte & PTE_R) && (*pte & PTE_U)) {
+      pa0 = PTE2PA(*pte);
+    }
     else {
-      pa0 = pte ? PTE2PA(*pte) : 0;
+      return -1;
     }
 
-    if(pa0 == 0)
-      return -1;
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;
@@ -459,21 +464,10 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
   uint64 n, va0, pa0;
   int got_null = 0;
-  struct proc* p = myproc();
-  pte_t* pte = 0;
 
   while(got_null == 0 && max > 0){
     va0 = PGROUNDDOWN(srcva);
-    if (va0 >= MAXVA) return -1;
-    pte = walk(pagetable, va0, 0);
-    if (pte && (*pte & PTE_V) && (*pte & PTE_U) == 0) { // not a user page
-      return -1;
-    }
-    // don't allow copyinstr from a lazypage
-    if (inlazypage(p, va0, pte)) {
-      break;
-    }
-    pa0 = PTE2PA(*pte);
+    pa0 = walkaddr(pagetable, va0);
 
     if(pa0 == 0)
       return -1;
@@ -507,14 +501,12 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 
 /**
  * check if a new page should be allocated and mapped
- * @param p process
- * @param va virtual addr
  * @param pte supply this with `walk(pgtbl, va, 0/1)`
  */
 int
-inlazypage(struct proc* p, uint64 va, pte_t* pte)
+islazypage(pte_t* pte)
 {
-  if (va < p->sz && (pte == 0 || (*pte & PTE_V) == 0))
+  if (pte == 0 || (*pte & PTE_V) == 0)
     return 1;
 
   return 0;
@@ -522,12 +514,12 @@ inlazypage(struct proc* p, uint64 va, pte_t* pte)
 
 /**
  * allocate a new page for lazy allocation
- * @param p process
+ * @param pagetable
  * @param va virtual addr
  * @return the newly allocated page address, or -1 on error
  */
 uint64
-alloclazypage(struct proc* p, uint64 va)
+alloclazypage(pagetable_t pagetable, uint64 va)
 {
   // allocate a page for lazy allocation
   void* mem;
@@ -536,7 +528,7 @@ alloclazypage(struct proc* p, uint64 va)
   }
 
   memset(mem, 0, PGSIZE);
-  if (mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, PTE_W | PTE_X | PTE_R | PTE_U) != 0) {
+  if (mappages(pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, PTE_W | PTE_X | PTE_R | PTE_U) != 0) {
     kfree(mem);
     return -1;
   }
@@ -546,34 +538,30 @@ alloclazypage(struct proc* p, uint64 va)
 /**
  * check if a page is a cow page
  * cow page should not have PTE_W flag set.
- * @param p process
- * @param va virtual addr
  * @param pte supply this with `walk(pgtbl, va, 0/1)`
  */
 int
-incowpage(struct proc* p, uint64 va, pte_t* pte)
+iscowpage(pte_t* pte)
 {
-  if (va < p->sz && (*pte & PTE_COW)) {
+  if (*pte & PTE_COW) {
     if (*pte & PTE_W)
-      panic("incowpage: cow page has write permission");
+      panic("iscowpage: cow page has write permission");
     return 1;
   }
-
   return 0;
-
 }
 
 /**
  * when page fault happens on a cow page, allocate an actual physical page
  *  and remove PTE_COW, reduce reference for the original cow page. If
  *  ref is 1, then take over by just removing PTE_COW
- * @param p
+ * @param pagetable
  * @param va
  * @param pte type: pte_t*, supply with walk(pgtbl, va, 0/1)
  * @return the newly allocated page address, or -1 on error
  */
 uint64
-alloccowpage(struct proc* p, uint64 va, pte_t* pte)
+alloccowpage(pagetable_t pagetable, uint64 va, pte_t* pte)
 {
   // optimization: no need to alloc new page if ref count is 1
   if (kgetrefcnt(PTE2PA(*pte)) == 1) {
@@ -586,18 +574,20 @@ alloccowpage(struct proc* p, uint64 va, pte_t* pte)
   }
   memset(mem, 0, PGSIZE);
   uint64 pa = PTE2PA(*pte);
-  memmove(mem, (char*)pa, PGSIZE);
-  if (mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW)) != 0) {
-    kfree(mem);
-    return -1;
-  }
+  memmove(mem, (void*)pa, PGSIZE);
+  *pte = PA2PTE((uint64)mem) | PTE_FLAGS((*pte | PTE_W) & (~PTE_COW));
   kfree((void*)pa); // decrease reference count, free if ref reaches 0
   return (uint64)mem;
 }
 
 /**
  * copy-on-write implemented based on uvmcopy()
- * create COW mapping for both parent and child
+ * create COW mapping for both parent and child.
+ * For pages that are mapped and valid:
+ *  - if writeable: mark as cow page and remove write permission
+ *  - other cases: normal mapping
+ * For pages that are not mapped or not valid, treat them as lazypage for both parent and child
+ * For all pages, increase reference count for the physical page if mapped
  * @param parent
  * @param child
  * @param sz
@@ -613,22 +603,17 @@ uvmcopyonwrite(pagetable_t parent, pagetable_t child, uint64 sz)
       continue;
     if ((*pte & PTE_V) == 0)
       continue;
-    /**
-     * For pages that are valid and mapped AND writeable or already a cow page, set it as cow page, and mark
-     *  both parent and child entry as PTE_COW, remove PTE_W. And add reference to the
-     *  physical page
-     */
-    if (!(*pte & PTE_W) && !(*pte & PTE_COW))
-      continue;
-    *pte = (*pte | PTE_COW) & (~PTE_W); // update parent pte flags
     pa = PTE2PA(*pte);
+    if (*pte & PTE_W) {
+      *pte = (*pte | PTE_COW) & (~PTE_W); // mark parent pagetable entry as cow and remove write permission
+    }
     if (mappages(child, i, PGSIZE, pa, PTE_FLAGS(*pte)) != 0) {
-      // reverse the modification on parent ptes
+      // on failure: reverse the modification on parent ptes
       for (int j = i - PGSIZE; j >= 0; j -= PGSIZE) {
         pte = walk(parent, j, 0);
         if (!(*pte & PTE_COW))
           continue;
-        kmodifyref(PTE2PA(*pte), -1);
+        kfree((void*)PTE2PA(*pte));
       }
       uvmunmap(child, 0, i / PGSIZE, 0);
       return -1;
@@ -636,5 +621,23 @@ uvmcopyonwrite(pagetable_t parent, pagetable_t child, uint64 sz)
     kmodifyref(pa, +1);
   }
   return 0;
+}
 
+int
+pagefaulthandler(struct proc* p, uint64 va, uint64 scause)
+{
+  if (va >= p->sz) { // for now only possible for page fault to happen in [0, sz)
+    setkilled(p);
+    return -1;
+  }
+  else {
+    pte_t* pte = walk(p->pagetable, va, 0);
+    if (islazypage(pte)) {
+      return alloclazypage(p->pagetable, va) == -1 ? -1 : 0;
+    }
+    else if (scause == 15 && iscowpage(pte)) {
+      return alloccowpage(p->pagetable, va, pte) == -1 ? -1 : 0;
+    }
+    return -1;
+  }
 }

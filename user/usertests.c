@@ -2189,6 +2189,16 @@ sbrkfail(char *s)
 
   // test running fork with the above allocated page 
   pid = fork();
+
+  /**
+   * Add this line to trigger cow page allocation for xstatus in the parent process.
+   * Without it, test fails in `wait(&xstatus)`->`copyout()`:
+   *  since copyout needs to write to xstatus which is in a cow page, and `freeproc()`
+   *  only gets called after copyout returns, thus no free memory can be used. See `wait()`
+   *  in proc.c for details. (`wait()` is not modified)
+   */
+  xstatus = 0;
+  
   if(pid < 0){
     printf("%s: fork failed\n", s);
     exit(1);

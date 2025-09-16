@@ -53,6 +53,10 @@ sys_sbrk(void)
     uvmdealloc(p->pagetable, p->sz, p->sz + n);
   }
   p->sz += n;
+  if (p->sz >= MAXVA) {
+    p->sz -= n;
+    return -1;
+  }
 
   return addr;
 }
