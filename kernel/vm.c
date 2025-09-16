@@ -410,7 +410,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
   uint64 n, va0, pa0;
   struct proc* p = myproc();
   pte_t* pte = 0;
-  // int islazyflag = 0;
+  int islazyflag = 0;
 
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
@@ -422,12 +422,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     }
     // if va0 is in lazypage don't allocate only set memory to zero
     if (va0 < p->sz && islazypage(pte)) {
-      // islazyflag = 1;
-      if ((pa0 = alloclazypage(pagetable, va0)) == -1) {
-        setkilled(p);
-        return -1;
-      }
-      // pa0 = 1; // dummy value
+      islazyflag = 1;
     }
     else if (pte && (*pte & PTE_V) && (*pte & PTE_R) && (*pte & PTE_U)) {
       pa0 = PTE2PA(*pte);
@@ -439,18 +434,17 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     n = PGSIZE - (srcva - va0);
     if(n > len)
       n = len;
-    // if (islazyflag) {
-    //   memset(dst, 0, n); // return zeroed memory for lazy page
-    // }
-    // else {
-    //   memmove(dst, (void*)(pa0 + (srcva - va0)), n);
-    // }
+    if (islazyflag) {
+      memset(dst, 0, n); // return zeroed memory for lazy page
+    }
+    else {
+      memmove(dst, (void*)(pa0 + (srcva - va0)), n);
+    }
 
-    memmove(dst, (void*)(pa0 + (srcva - va0)), n);
     len -= n;
     dst += n;
     srcva = va0 + PGSIZE;
-    // islazyflag = 0;
+    islazyflag = 0;
   }
   return 0;
 }
