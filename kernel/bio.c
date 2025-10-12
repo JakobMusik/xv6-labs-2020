@@ -28,16 +28,42 @@
 struct bufbucket {
   struct spinlock lock;
   struct buf* head;
+  struct buf* freehead;
 };
 
 struct bufcache {
   struct buf buffer[NBUF];
   struct bufbucket bbucket[NBUFBUCKET];
 } bcache;
-
+static inline void setupnewbuf(struct buf* b, uint dev, uint blockno) {
+  b->dev = dev;
+  b->blockno = blockno;
+  b->valid = 0;
+  b->refcnt = 1;
+}
 
 static inline uint buckethash(uint dev, uint blockno) {
   return (uint) ((1L * blockno * 97 + dev) % NBUFBUCKET);
+}
+// assuming bucket's lock is held
+static void bucketaddfront(struct bufbucket* bbucket, struct buf* b, struct buf** listhead) {
+  b->prev = 0;
+  b->next = *listhead;
+  if (*listhead) {
+    (*listhead)->prev = b;
+  }
+  *listhead = b;
+}
+static void bucketremove(struct bufbucket* bbucket, struct buf* b, struct buf** listhead) {
+  if (b->prev) {
+    b->prev->next = b->next;
+  }
+  else {
+    (*listhead) = b->next;
+  }
+  if (b->next) {
+    b->next->prev = b->prev;
+  }
 }
 
 void
@@ -57,7 +83,7 @@ binit(void)
   bcache.buffer[0].prev = 0;
   bcache.buffer[NBUF - 1].next = 0;
   // Initially, all buffers are in the first bucket
-  bcache.bbucket[0].head = bcache.buffer;
+  bcache.bbucket[0].freehead = bcache.buffer;
 }
 
 // Look through buffer cache for block on device dev.
@@ -87,54 +113,34 @@ bget(uint dev, uint blockno)
   // release(&bcache.bbucket[bbi].lock);
 
   // Not cached.
-  // Recycle an unused buffer, search in other buckets with ascending order.
-  // Search its own bucket first, then other buckets
-  for (b = bcache.bbucket[bbi].head; b != 0; b = b->next) {
-    if(b->refcnt == 0) {
-      b->dev = dev;
-      b->blockno = blockno;
-      b->valid = 0;
-      b->refcnt = 1;
-      release(&bcache.bbucket[bbi].lock);
-      acquiresleep(&b->lock);
-      return b;
-    }
+  // Recycle an unused buffer, search in all buckets with ascending order.
+  // Search its own free list first without holding additional lock.
+  if ((b = bcache.bbucket[bbi].freehead) != 0) {
+    bucketremove(&bcache.bbucket[bbi], b, &bcache.bbucket[bbi].freehead);
+    bucketaddfront(&bcache.bbucket[bbi], b, &bcache.bbucket[bbi].head);
+    setupnewbuf(b, dev, blockno);
+    release(&bcache.bbucket[bbi].lock);
+    acquiresleep(&b->lock);
+    return b;
   }
-
-  for (uint idx = (bbi + 1) % NBUFBUCKET, i = 0; i < NBUFBUCKET - 1; idx = (idx + 1) % NBUFBUCKET, ++i) {
+  register int i = 1;
+  for (uint idx = (bbi + 1) % NBUFBUCKET; i < NBUFBUCKET; idx = (idx + 1) % NBUFBUCKET, ++i) {
     acquire(&bcache.bbucket[idx].lock);
-    for (b = bcache.bbucket[idx].head; b != 0; b = b->next) {
-      if(b->refcnt == 0) {
-        // Remove from current bucket
-        if (b->prev) {
-          b->prev->next = b->next;
-        }
-        else {
-          bcache.bbucket[idx].head = b->next;
-        }
-        if (b->next) {
-          b->next->prev = b->prev;
-        }
-        release(&bcache.bbucket[idx].lock);
-
-        // Add to the front of the target bucket
-        b->prev = 0;
-        b->next = bcache.bbucket[bbi].head;
-        if (bcache.bbucket[bbi].head) {
-          bcache.bbucket[bbi].head->prev = b;
-        }
-        bcache.bbucket[bbi].head = b;
-
-        b->dev = dev;
-        b->blockno = blockno;
-        b->valid = 0;
-        b->refcnt = 1;
-        release(&bcache.bbucket[bbi].lock);
-        acquiresleep(&b->lock);
-        return b;
-      }
+    b = bcache.bbucket[idx].freehead;
+    if (b == 0) {
+      release(&bcache.bbucket[idx].lock);
+      continue;
     }
+    // Remove from freelist in the current searching bucket
+    bucketremove(&bcache.bbucket[idx], b, &bcache.bbucket[idx].freehead);
     release(&bcache.bbucket[idx].lock);
+
+    // Add to the front of the main list of the target bucket
+    bucketaddfront(&bcache.bbucket[bbi], b, &bcache.bbucket[bbi].head);
+    setupnewbuf(b, dev, blockno);
+    release(&bcache.bbucket[bbi].lock);
+    acquiresleep(&b->lock);
+    return b;
   }
   panic("bget: no free buffers");
   return 0;
@@ -178,21 +184,10 @@ brelse(struct buf *b)
 
   b->refcnt--;
   if (b->refcnt == 0) {
-    // TODO implement per-bucket free list (each bucket has its own LRU list)
-    // // no one is waiting for it.
-    // // Move to the head of the bucket's list.
-    // if (b->prev) {
-    //   b->prev->next = b->next;
-    // }
-    // if (b->next) {
-    //   b->next->prev = b->prev;
-    // }
-    // b->prev = 0;
-    // b->next = bcache.bbucket[bbi].head;
-    // if (bcache.bbucket[bbi].head) {
-    //   bcache.bbucket[bbi].head->prev = b;
-    // }
-    // bcache.bbucket[bbi].head = b;
+    // no one is waiting for it.
+    // Move to the head of the bucket's free list.
+    bucketremove(&bcache.bbucket[bbi], b, &bcache.bbucket[bbi].head);
+    bucketaddfront(&bcache.bbucket[bbi], b, &bcache.bbucket[bbi].freehead);
   }
 
   release(&bcache.bbucket[bbi].lock);
