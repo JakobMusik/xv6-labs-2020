@@ -3,15 +3,8 @@
 #include "user/user.h"
 #include "kernel/param.h"
 
-#define MAXLINELEN 512 // maximum supported line length
-
-void run(char** args) {
-    if (fork() == 0) {
-        exec(args[0], args);
-        exit(0);
-    }
-    wait(0);
-}
+#define MAXARGS 64
+#define MAXPARAMLEN 256
 
 int main(char argc, char** argv)
 {
@@ -19,52 +12,57 @@ int main(char argc, char** argv)
         fprintf(2, "Usage: xargs command [initial-arguments...]\n");
         exit(1);
     }
-    char* newArgs[MAXARG] = {};
+
+    char* new_args[MAXARGS];
     for (int i = 1; i < argc; ++i) {
-        newArgs[i - 1] = argv[i];
+      new_args[i - 1] = argv[i];
     }
-    const int oldArgsCnt = argc - 1;
+    
+    int arg_count = argc - 1;
 
-    char buf[MAXLINELEN * 2];
-    char* const bufNow = buf + MAXLINELEN;
-    // char* const bufLast = buf;
-#define bufLast (bufNow - readSiz)
-    int readSiz = 0;
-    int newArgIdx = oldArgsCnt;
-    int curArgStartIdx = 0;
-    char hasArg = 0;
-    while ((readSiz = read(0, bufNow, MAXLINELEN)) > 0) {
-        for (int i = 0; ; ) {
-            if (i >= readSiz) {
-                break;
-            }
-            if (bufNow[i] == ' ' && i != curArgStartIdx) {
-                bufNow[i] = '\0';
-                newArgs[newArgIdx++] = bufNow + curArgStartIdx;
-                do {
-                    i++;
-                } while (i < readSiz && bufNow[i] == ' ');
-                curArgStartIdx = i;
-            } else if (bufNow[i] == '\n' && hasArg) {
-                bufNow[i] = '\0';
-                newArgs[newArgIdx++] = bufNow + curArgStartIdx;
-                do {
-                    i++;
-                } while (i < readSiz && (bufNow[i] == '\n' || bufNow[i] == ' '));
-                curArgStartIdx = i;
+    char param_buf[MAXPARAMLEN];
+    int n = read(0, param_buf, sizeof(param_buf) - 1);
+    if (n < 0) {
+        fprintf(2, "xargs: read error\n");
+        exit(1);
+    }
+    param_buf[n] = '\0';
 
-                newArgs[newArgIdx] = 0; // NULL
-                run(newArgs);
-                newArgIdx = oldArgsCnt;
-                hasArg = 0;
-            } else {
-                hasArg = 1;
-                i++;
-            }
+    // parse parameters by whitespace
+    char* p = param_buf;
+    const int old_param_count = arg_count;
+    while (p - param_buf < n) {
+        // skip leading whitespace
+        while (*p && (*p == ' ' || *p == '\n' || *p == '\t')) {
+          p++;
         }
-        memmove(bufLast, bufNow, readSiz);
-        for (int i = oldArgsCnt; i < newArgIdx; ++i) {
-            newArgs[i] -= MAXLINELEN;
+        if (*p == '\0') {
+          p++;
+          continue;
+        }
+        // save the start of a new parameter
+        new_args[arg_count++] = p;
+
+        // find the end of the parameter
+        while (*p && (*p != ' ' && *p != '\n' && *p != '\t')) {
+          p++;
+        }
+        if (*p == ' ' || *p == '\t' || *p == '\0') { // more parameters to come on this line
+            *p = '\0';
+            p++;
+            continue;
+        }
+        if (*p == '\n') { // line break -> invoke exec
+            *p = '\0';
+            p++;
+            if (fork() == 0) {
+              new_args[arg_count] = 0;
+              exec(new_args[0], new_args);
+              fprintf(2, "xargs: exec %s failed\n", new_args[0]);
+              exit(1);
+            }
+            wait(0);
+            arg_count = old_param_count; // reset to initial arguments
         }
     }
 

@@ -26,12 +26,14 @@ int main(int argc, char** argv)
         printf("%d: received ping\n", getpid());
         write(p_up[WR], "1", sizeof(char));
         close(p_up[WR]);
-    } else {                // parent
-        write(p_down[WR], "1", sizeof(char));
-        close(p_down[WR]);
-        read(p_up[RD], &buf, sizeof(char));
-        close(p_up[RD]);
-        printf("%d: received pong\n", getpid());
+        exit(0);
     }
+    // parent
+    write(p_down[WR], "1", sizeof(char));
+    close(p_down[WR]);
+    read(p_up[RD], &buf, sizeof(char));
+    close(p_up[RD]);
+    printf("%d: received pong\n", getpid());
+    wait(0); // wait for child to avoid zombie
     exit(0);
 }
